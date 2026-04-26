@@ -1,15 +1,25 @@
-import random
-import json
 import os
+import json
+import random
 import time
-from telegram import Update, BotCommand
-from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    BotCommand
+)
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    CallbackContext,
+    CallbackQueryHandler,
+    MessageHandler,
+    Filters
+)
 
 TOKEN = os.getenv("TOKEN")
-
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 CHANNEL = "@RITIK_GAMING_OG"
-PAID_CHANNEL_LINK = "https://t.me/+ZxkSDF8BQVIxOTNl"
-ADMIN_ID = 7050657650  # 🔥 replace with your ID
 
 DATA_FILE = "data.json"
 
@@ -20,193 +30,201 @@ if os.path.exists(DATA_FILE):
 else:
     data = {
         "users": {},
-        "vip_claimed": False,
-        "vip_queue": [],
+        "referrals": {},
+        "rewards": ["🔥 Smooth Config", "💎 Paid File", "👑 VIP Access"],
+        "discounts": [],
         "config_queue": [],
-        "referrals": {}
+        "vip_queue": []
     }
 
-def save_data():
+admin_state = {}
+
+def save():
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
-def get_user(user_id):
-    if str(user_id) not in data["users"]:
-        data["users"][str(user_id)] = {"keys": 0}
-    return data["users"][str(user_id)]
+def get_user(uid):
+    uid = str(uid)
+    if uid not in data["users"]:
+        data["users"][uid] = {"keys": 0}
+    return data["users"][uid]
 
-# ---------------- FORCE JOIN ----------------
-def is_joined(update, context):
-    try:
-        member = context.bot.get_chat_member(CHANNEL, update.message.from_user.id)
-        return member.status in ["member", "administrator", "creator"]
-    except:
-        return False
+# ---------------- LOADING BAR ----------------
+def loading(context, chat_id, msg_id, final):
+    bar = [
+        "🟦░░░░░░░░░░ 0%",
+        "🟦🟦🟦░░░░░░░ 30%",
+        "🟦🟦🟦🟦🟦░░░ 50%",
+        "🟦🟦🟦🟦🟦🟦🟦░ 70%",
+        "🟦🟦🟦🟦🟦🟦🟦🟦🟦 100%"
+    ]
+
+    for b in bar:
+        context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=f"⏳ Loading...\n\n{b}")
+        time.sleep(0.4)
+
+    context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=final)
 
 # ---------------- START ----------------
 def start(update: Update, context: CallbackContext):
-    user_id = str(update.message.from_user.id)
+    uid = str(update.message.from_user.id)
 
-    # referral system
+    if uid not in data["users"]:
+        data["users"][uid] = {"keys": 0}
+
+    # referral fix (no abuse)
     if context.args:
         ref = context.args[0]
-        if ref != user_id and user_id not in data["referrals"]:
-            data["referrals"][user_id] = ref
-            ref_user = get_user(ref)
-            ref_user["keys"] += 1
-            context.bot.send_message(ref, "🎉 +1 Key from referral!")
+        if ref != uid and uid not in data["referrals"]:
+            data["referrals"][uid] = ref
+            if ref in data["users"]:
+                data["users"][ref]["keys"] += 1
+            save()
 
-    save_data()
+    keyboard = [
+        [InlineKeyboardButton("🎁 Open Box", callback_data="open")],
+        [InlineKeyboardButton("🔑 My Keys", callback_data="keys")],
+        [InlineKeyboardButton("🔗 Invite Friends", callback_data="refer")],
+        [InlineKeyboardButton("🎁 Rewards Info", callback_data="rewards")],
+        [InlineKeyboardButton("⏳ Daily Rewards", callback_data="daily")],
+        [InlineKeyboardButton("💰 Discounts", callback_data="discounts")]
+    ]
 
     update.message.reply_text(
-        "🔥 Welcome to MysticDropZone Bot!\n\n"
-        "🎁 Invite → Earn Keys → Open Boxes\n\n"
-        "Commands:\n"
-        "/daily - Get reward\n"
-        "/open - Open box\n"
-        "/keys - Check keys\n"
-        "/refer - Invite friends"
+        "🔥 MysticDropZone Bot",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ---------------- DAILY ----------------
-def daily(update: Update, context: CallbackContext):
-    if not is_joined(update, context):
-        update.message.reply_text(f"❌ Join first: {CHANNEL}")
+# ---------------- BUTTON HANDLER ----------------
+def buttons(update: Update, context: CallbackContext):
+    q = update.callback_query
+    q.answer()
+
+    uid = str(q.from_user.id)
+    user = get_user(uid)
+
+    # OPEN BOX
+    if q.data == "open":
+        if user["keys"] <= 0:
+            q.edit_message_text("❌ No keys! Invite friends.")
+            return
+
+        user["keys"] -= 1
+        save()
+
+        msg = q.message
+        loading(context, msg.chat_id, msg.message_id, "🎉 Box Opened!")
+
+        reward = random.choice(data["rewards"])
+
+        if "VIP" in reward:
+            data["vip_queue"].append(uid)
+        if "Config" in reward:
+            data["config_queue"].append(uid)
+
+        save()
+        context.bot.send_message(uid, f"🎁 You got: {reward}")
+
+    # KEYS
+    elif q.data == "keys":
+        q.edit_message_text(f"🔑 Keys: {user['keys']}")
+
+    # REFER
+    elif q.data == "refer":
+        bot = context.bot.username
+        link = f"https://t.me/{bot}?start={uid}"
+        q.edit_message_text(f"🔗 Share:\n{link}")
+
+    # REWARDS
+    elif q.data == "rewards":
+        q.edit_message_text("\n".join(data["rewards"]))
+
+    # DAILY (COMING SOON)
+    elif q.data == "daily":
+        q.edit_message_text(
+            "⏳ Coming Soon...\n\n"
+            "🎁 Daily Rewards system under development\n"
+            "🔥 Stay tuned!"
+        )
+
+    # DISCOUNTS
+    elif q.data == "discounts":
+        if not data["discounts"]:
+            q.edit_message_text("❌ No discounts")
+            return
+
+        d = random.choice(data["discounts"])
+        discount = random.randint(d["min"], d["max"])
+
+        loading(context, q.message.chat_id, q.message.message_id,
+                 f"💰 Discount Unlocked: {discount}% 🎉")
+
+# ---------------- ADMIN PANEL ----------------
+def admin(update: Update, context: CallbackContext):
+    if update.message.from_user.id != ADMIN_ID:
         return
 
-    user = get_user(update.message.from_user.id)
-    user["keys"] += 1
-    save_data()
+    keyboard = [
+        [InlineKeyboardButton("👥 Users", callback_data="a_users")],
+        [InlineKeyboardButton("🎁 Rewards", callback_data="a_rewards")],
+        [InlineKeyboardButton("➕ Add Reward", callback_data="a_add")],
+        [InlineKeyboardButton("❌ Remove Reward", callback_data="a_remove")],
+        [InlineKeyboardButton("📦 Queue", callback_data="a_queue")]
+    ]
 
-    update.message.reply_text("🎁 +1 Key added!")
+    update.message.reply_text(
+        "🛠 Admin Panel",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-# ---------------- KEYS ----------------
-def keys(update: Update, context: CallbackContext):
-    user = get_user(update.message.from_user.id)
-    update.message.reply_text(f"🔑 Keys: {user['keys']}")
+# ---------------- ADMIN BUTTONS ----------------
+def admin_buttons(update: Update, context: CallbackContext):
+    q = update.callback_query
+    q.answer()
 
-# ---------------- REFER ----------------
-def refer(update: Update, context: CallbackContext):
+    if q.from_user.id != ADMIN_ID:
+        return
+
+    if q.data == "a_users":
+        q.edit_message_text(f"👥 Users: {len(data['users'])}")
+
+    elif q.data == "a_rewards":
+        q.edit_message_text("\n".join(data["rewards"]))
+
+    elif q.data == "a_queue":
+        q.edit_message_text(
+            f"📦 Config: {len(data['config_queue'])}\n"
+            f"💎 VIP: {len(data['vip_queue'])}"
+        )
+
+    elif q.data == "a_add":
+        admin_state[ADMIN_ID] = "add"
+        q.edit_message_text("Send reward name")
+
+    elif q.data == "a_remove":
+        admin_state[ADMIN_ID] = "remove"
+        q.edit_message_text("Send reward to remove")
+
+# ---------------- ADMIN TEXT ----------------
+def text(update: Update, context: CallbackContext):
     uid = update.message.from_user.id
-    botname = context.bot.username
-    link = f"https://t.me/{botname}?start={uid}"
-
-    update.message.reply_text(f"🔗 Invite link:\n{link}")
-
-# ---------------- OPEN BOX ----------------
-def open_box(update: Update, context: CallbackContext):
-    if not is_joined(update, context):
-        update.message.reply_text(f"❌ Join first: {CHANNEL}")
+    if uid != ADMIN_ID:
         return
 
-    user = get_user(update.message.from_user.id)
+    state = admin_state.get(uid)
 
-    if user["keys"] <= 0:
-        update.message.reply_text("❌ No keys!")
-        return
+    msg = update.message.text
 
-    user["keys"] -= 1
+    if state == "add":
+        data["rewards"].append(msg)
+        save()
+        update.message.reply_text("✅ Added reward")
 
-    msg = update.message.reply_text("🎁 Opening box...")
-    time.sleep(1.5)
-
-    context.bot.edit_message_text("🔄 Unlocking reward...", msg.chat_id, msg.message_id)
-    time.sleep(1.5)
-
-    roll = random.randint(1, 100)
-
-    # 💎 PAID FILE (PRIVATE CHANNEL)
-    if roll <= 60:
-        reward = (
-            "💎 PAID FILE UNLOCKED!\n\n"
-            "🔐 Access private content below:\n"
-            f"{PAID_CHANNEL_LINK}\n\n"
-            "⚠️ Do not share"
-        )
-
-    # 🎁 CONFIG (QUEUE)
-    elif roll <= 90:
-        reward = "🎁 CONFIG WON! Admin will send soon."
-        data["config_queue"].append(update.message.from_user.id)
-
-        context.bot.send_message(
-            ADMIN_ID,
-            f"📤 CONFIG WINNER @{update.message.from_user.username}"
-        )
-
-    # 👑 VIP
-    else:
-        if not data["vip_claimed"]:
-            reward = "👑 VIP WON! Admin will contact you."
-            data["vip_claimed"] = True
-            data["vip_queue"].append(update.message.from_user.id)
-
-            context.bot.send_message(
-                ADMIN_ID,
-                f"💎 VIP WINNER @{update.message.from_user.username}"
-            )
-
-            context.bot.send_message(
-                CHANNEL,
-                f"🎉 VIP WINNER @{update.message.from_user.username}"
-            )
-        else:
-            reward = "🎁 Try again!"
-
-    save_data()
-
-    context.bot.edit_message_text(
-        reward,
-        msg.chat_id,
-        msg.message_id
-    )
-
-# ---------------- ADMIN ADD KEYS ----------------
-def addkey(update: Update, context: CallbackContext):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-
-    try:
-        uid = context.args[0]
-        amount = int(context.args[1])
-
-        user = get_user(uid)
-        user["keys"] += amount
-        save_data()
-
-        update.message.reply_text(f"✅ Added {amount} keys")
-
-        context.bot.send_message(uid, f"🎁 You got {amount} keys!")
-    except:
-        update.message.reply_text("Usage: /addkey user_id amount")
-
-# ---------------- HANDLE QUEUE ----------------
-def handle_file(update: Update, context: CallbackContext):
-    if not update.message:
-        return
-
-    if update.message.from_user.id != ADMIN_ID:
-        return
-
-    if data["config_queue"]:
-        uid = data["config_queue"].pop(0)
-
-        context.bot.copy_message(uid, update.message.chat_id, update.message.message_id)
-
-        update.message.reply_text("✅ Config sent")
-        save_data()
-        return
-
-    if data["vip_queue"]:
-        uid = data["vip_queue"].pop(0)
-
-        context.bot.copy_message(uid, update.message.chat_id, update.message.message_id)
-
-        update.message.reply_text("✅ VIP sent")
-        save_data()
-        return
-
-    update.message.reply_text("❌ No queue")
+    elif state == "remove":
+        if msg in data["rewards"]:
+            data["rewards"].remove(msg)
+            save()
+            update.message.reply_text("❌ Removed reward")
 
 # ---------------- MAIN ----------------
 def main():
@@ -214,21 +232,15 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("daily", daily))
-    dp.add_handler(CommandHandler("keys", keys))
-    dp.add_handler(CommandHandler("open", open_box))
-    dp.add_handler(CommandHandler("refer", refer))
-    dp.add_handler(CommandHandler("addkey", addkey))
+    dp.add_handler(CommandHandler("admin", admin))
 
-    dp.add_handler(MessageHandler(Filters.all, handle_file))
+    dp.add_handler(CallbackQueryHandler(buttons))
+    dp.add_handler(CallbackQueryHandler(admin_buttons))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text))
 
     updater.bot.set_my_commands([
-        BotCommand("start", "Start bot"),
-        BotCommand("daily", "Daily reward"),
-        BotCommand("open", "Open box"),
-        BotCommand("keys", "Check keys"),
-        BotCommand("refer", "Invite"),
-        BotCommand("addkey", "Admin add keys")
+        BotCommand("start", "Open bot"),
+        BotCommand("admin", "Admin panel")
     ])
 
     updater.start_polling()
