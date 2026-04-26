@@ -12,24 +12,21 @@ CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 
 DATA_FILE = "data.json"
 
-# ================= LOAD DATA =================
+# ================= LOAD =================
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
         data = json.load(f)
 else:
     data = {
         "users": {},
-        "referrals": {},
         "cooldowns": {},
-        "vip_queue": [],
-        "config_queue": [],
-        "admin_messages": [],
-        "giveaway": {"active": False, "limit": 0, "users": []},
         "rewards": [
-            {"name": "🔥 Smooth Config", "weight": 60},
-            {"name": "💎 Paid File", "weight": 30},
-            {"name": "👑 VIP Access", "weight": 10}
-        ]
+            {"name": "🔥 Smooth Config", "weight": 60, "limit": 999, "won": 0},
+            {"name": "💎 Paid File", "weight": 30, "limit": 50, "won": 0},
+            {"name": "👑 VIP Access", "weight": 10, "limit": 10, "won": 0}
+        ],
+        "giveaway": {"active": False, "limit": 0, "users": []},
+        "admin_messages": {}
     }
 
 admin_state = {}
@@ -46,70 +43,45 @@ def get_user(uid):
         data["users"][uid] = {"keys": 0}
     return data["users"][uid]
 
-# ================= SPAM =================
-def is_spam(uid):
-    now = time.time()
-    last = data["cooldowns"].get(uid, 0)
-    if now - last < 3:
-        return True
-    data["cooldowns"][uid] = now
-    return False
-
 # ================= MENU =================
 def menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎁 Open Box", callback_data="open")],
-        [InlineKeyboardButton("🔑 Keys", callback_data="keys")],
+        [InlineKeyboardButton("🔑 My Keys", callback_data="keys")],
         [InlineKeyboardButton("🔗 Invite", callback_data="refer")],
         [InlineKeyboardButton("🎁 Rewards", callback_data="rewards")],
-        [InlineKeyboardButton("💬 Message Admin", callback_data="msg_admin")]
+        [InlineKeyboardButton("💬 Message Admin", callback_data="msg")]
     ])
 
-# ================= REWARD =================
+# ================= REWARD ENGINE =================
 def pick_reward():
-    total = sum(r["weight"] for r in data["rewards"])
+    available = [r for r in data["rewards"] if r["won"] < r["limit"]]
+    if not available:
+        return None
+
+    total = sum(r["weight"] for r in available)
     r = random.randint(1, total)
 
     upto = 0
-    for reward in data["rewards"]:
+    for reward in available:
         upto += reward["weight"]
         if upto >= r:
-            return reward["name"]
+            return reward
+
+# ================= SPAM =================
+def is_spam(uid):
+    now = time.time()
+    if uid in data["cooldowns"] and now - data["cooldowns"][uid] < 3:
+        return True
+    data["cooldowns"][uid] = now
+    return False
 
 # ================= START =================
 def start(update: Update, context: CallbackContext):
     uid = str(update.message.from_user.id)
-    user = get_user(uid)
+    get_user(uid)
 
-    # referral
-    if context.args:
-        ref = context.args[0]
-        if ref != uid and uid not in data["referrals"]:
-            data["referrals"][uid] = ref
-
-            if ref in data["users"]:
-                data["users"][ref]["keys"] += 1
-                context.bot.send_message(ref, "🎉 Referral bonus +1 key!")
-
-            update.message.reply_text("🎉 You got +1 key!")
-
-            save()
-
-    # GIVEAWAY SYSTEM
-    if data["giveaway"]["active"]:
-        if uid not in data["giveaway"]["users"]:
-            if len(data["giveaway"]["users"]) < data["giveaway"]["limit"]:
-                data["giveaway"]["users"].append(uid)
-                user["keys"] += 1
-
-                update.message.reply_text("🎁 Giveaway reward: +1 Key!")
-
-                if len(data["giveaway"]["users"]) >= data["giveaway"]["limit"]:
-                    data["giveaway"]["active"] = False
-
-                save()
-
-    update.message.reply_text("🔥 Welcome Bot", reply_markup=menu())
+    update.message.reply_text("🔥 Welcome", reply_markup=menu())
 
 # ================= CALLBACK =================
 def button(update: Update, context: CallbackContext):
@@ -123,28 +95,36 @@ def button(update: Update, context: CallbackContext):
         q.edit_message_text("⚠️ Slow down")
         return
 
-    # ================= OPEN =================
+    # ================= OPEN BOX =================
     if q.data == "open":
         if user["keys"] <= 0:
             q.edit_message_text("❌ No keys")
             return
 
         user["keys"] -= 1
-        save()
 
         reward = pick_reward()
 
-        if "VIP" in reward:
-            data["vip_queue"].append(uid)
+        if not reward:
+            q.edit_message_text("❌ All rewards exhausted")
+            return
 
-            if CHANNEL_ID:
-                context.bot.send_message(CHANNEL_ID, f"👑 VIP WINNER: {uid}")
+        reward["won"] += 1
+        save()
 
-        if "Config" in reward:
-            data["config_queue"].append(uid)
+        # CHANNEL ANNOUNCE
+        if CHANNEL_ID:
+            context.bot.send_message(
+                CHANNEL_ID,
+                f"🎉 WINNER\nUser: {uid}\nPrize: {reward['name']}"
+            )
 
-        context.bot.send_message(ADMIN_ID, f"🎁 WIN\nUser: {uid}\nReward: {reward}")
-        context.bot.send_message(uid, f"🎉 You got: {reward}")
+        context.bot.send_message(
+            ADMIN_ID,
+            f"🎁 WIN ALERT\nUser: {uid}\nPrize: {reward['name']}"
+        )
+
+        context.bot.send_message(uid, f"🎉 You got: {reward['name']}")
 
     elif q.data == "keys":
         q.edit_message_text(f"🔑 Keys: {user['keys']}", reply_markup=menu())
@@ -152,15 +132,17 @@ def button(update: Update, context: CallbackContext):
     elif q.data == "refer":
         bot = context.bot.username
         link = f"https://t.me/{bot}?start={uid}"
-        q.edit_message_text(f"🔗 {link}", reply_markup=menu())
+        q.edit_message_text(f"🔗 Invite:\n{link}", reply_markup=menu())
 
     elif q.data == "rewards":
-        txt = "\n".join([r["name"] for r in data["rewards"]])
+        txt = "\n".join(
+            [f"{r['name']} ({r['won']}/{r['limit']})" for r in data["rewards"]]
+        )
         q.edit_message_text(txt, reply_markup=menu())
 
     # ================= MESSAGE ADMIN =================
-    elif q.data == "msg_admin":
-        admin_state[uid] = "msg_admin"
+    elif q.data == "msg":
+        admin_state[uid] = "msg"
         q.edit_message_text("💬 Send message to admin:")
         return
 
@@ -173,56 +155,38 @@ def button(update: Update, context: CallbackContext):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("👥 Users", callback_data="a_users")],
                     [InlineKeyboardButton("🎁 Rewards", callback_data="a_rewards")],
-                    [InlineKeyboardButton("➕ Add Reward", callback_data="a_add")],
-                    [InlineKeyboardButton("❌ Remove Reward", callback_data="a_remove")],
                     [InlineKeyboardButton("🔑 Add Keys", callback_data="a_keys")],
                     [InlineKeyboardButton("🎁 Giveaway", callback_data="a_give")],
                     [InlineKeyboardButton("🔙 Back", callback_data="back")]
                 ])
             )
-            return
 
-        if q.data == "a_users":
+        elif q.data == "a_users":
             q.edit_message_text(f"👥 Users: {len(data['users'])}")
-            return
 
-        if q.data == "a_rewards":
-            txt = "\n".join([r["name"] for r in data["rewards"]])
+        elif q.data == "a_rewards":
+            txt = "\n".join([f"{r['name']} ({r['won']}/{r['limit']})" for r in data["rewards"]])
             q.edit_message_text(txt)
-            return
 
-        if q.data == "a_add":
-            admin_state[uid] = "add"
-            q.edit_message_text("Send: name weight")
-            return
-
-        if q.data == "a_remove":
-            admin_state[uid] = "remove"
-            q.edit_message_text("Send reward name")
-            return
-
-        if q.data == "a_keys":
-            admin_state[uid] = "keys"
+        elif q.data == "a_keys":
+            admin_state[ADMIN_ID] = "keys"
             q.edit_message_text("Send: user_id amount")
-            return
 
-        if q.data == "a_give":
-            admin_state[uid] = "give"
-            q.edit_message_text("Send giveaway limit number")
-            return
+        elif q.data == "a_give":
+            admin_state[ADMIN_ID] = "give"
+            q.edit_message_text("Send giveaway limit")
 
-        if q.data == "back":
-            q.edit_message_text("🏠 Main Menu", reply_markup=menu())
-            return
+        elif q.data == "back":
+            q.edit_message_text("🏠 Menu", reply_markup=menu())
 
 # ================= TEXT HANDLER =================
 def text(update: Update, context: CallbackContext):
     uid = str(update.message.from_user.id)
     msg = update.message.text
 
-    # USER MESSAGE TO ADMIN
-    if admin_state.get(uid) == "msg_admin":
-        context.bot.send_message(ADMIN_ID, f"💬 MSG {uid}:\n{msg}")
+    # USER → ADMIN MESSAGE
+    if admin_state.get(uid) == "msg":
+        context.bot.send_message(ADMIN_ID, f"💬 USER {uid}:\n{msg}")
         update.message.reply_text("✅ Sent to admin")
         admin_state.pop(uid)
         return
@@ -232,25 +196,16 @@ def text(update: Update, context: CallbackContext):
 
     state = admin_state.get(uid)
 
-    if state == "add":
-        name, weight = msg.split()
-        data["rewards"].append({"name": name, "weight": int(weight)})
-        save()
-        update.message.reply_text("✅ Added")
-
-    elif state == "remove":
-        data["rewards"] = [r for r in data["rewards"] if r["name"] != msg]
-        save()
-        update.message.reply_text("❌ Removed")
-
-    elif state == "keys":
+    if state == "keys":
         u, a = msg.split()
         get_user(u)["keys"] += int(a)
         save()
         update.message.reply_text("🔑 Added")
 
     elif state == "give":
-        data["giveaway"] = {"active": True, "limit": int(msg), "users": []}
+        data["giveaway"]["active"] = True
+        data["giveaway"]["limit"] = int(msg)
+        data["giveaway"]["users"] = []
         save()
         update.message.reply_text("🎁 Giveaway started")
 
