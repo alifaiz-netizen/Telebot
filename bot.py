@@ -56,10 +56,8 @@ def is_member(bot, uid, channel):
 def is_spam(uid):
     now = time.time()
     last = data["cooldowns"].get(uid, 0)
-
     if now - last < 3:
         return True
-
     data["cooldowns"][uid] = now
     return False
 
@@ -67,7 +65,7 @@ def is_spam(uid):
 def menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎁 Open Box", callback_data="open")],
-        [InlineKeyboardButton("🔑 My Keys", callback_data="keys")],
+        [InlineKeyboardButton("🔑 Keys", callback_data="keys")],
         [InlineKeyboardButton("🔗 Invite", callback_data="refer")],
         [InlineKeyboardButton("🎁 Rewards", callback_data="rewards")],
         [InlineKeyboardButton("💬 Message Admin", callback_data="msg_admin")]
@@ -77,7 +75,6 @@ def menu():
 def pick_reward():
     total = sum(r["weight"] for r in data["rewards"])
     r = random.randint(1, total)
-
     upto = 0
     for reward in data["rewards"]:
         upto += reward["weight"]
@@ -89,7 +86,7 @@ def start(update: Update, context: CallbackContext):
     uid = str(update.message.from_user.id)
     user = get_user(uid)
 
-    # FORCE JOIN
+    # CHANNEL JOIN CHECK
     if CHANNEL_ID:
         if not is_member(context.bot, uid, CHANNEL_ID):
             update.message.reply_text(
@@ -101,29 +98,21 @@ def start(update: Update, context: CallbackContext):
             )
             return
 
-    # REFERRAL
+    # REFERRAL SYSTEM
     if context.args:
         ref = context.args[0]
 
         if ref != uid and uid not in data["referrals"]:
-
-            if CHANNEL_ID and not is_member(context.bot, uid, CHANNEL_ID):
-                update.message.reply_text("❌ Join channel to use referral")
-                return
-
             data["referrals"][uid] = ref
 
             if ref in data["users"]:
                 data["users"][ref]["keys"] = data["users"][ref].get("keys", 0) + 1
-                save()
-
                 context.bot.send_message(ref, "🎉 +1 Key from referral!")
 
-            update.message.reply_text("🎉 Referral success +1 key")
+            update.message.reply_text("🎉 Referral success +1 key!")
+            save()
 
-    save()
-
-    update.message.reply_text("🔥 Welcome", reply_markup=menu())
+    update.message.reply_text("🔥 Welcome Bot", reply_markup=menu())
 
 # ================= CALLBACK =================
 def button(update: Update, context: CallbackContext):
@@ -133,13 +122,13 @@ def button(update: Update, context: CallbackContext):
     uid = str(q.from_user.id)
     user = get_user(uid)
 
-    # ONLY USERS get spam check
+    # SPAM ONLY FOR USERS
     if q.from_user.id != ADMIN_ID:
         if is_spam(uid):
             q.edit_message_text("⚠️ Slow down bro")
             return
 
-    # ================= JOIN CHECK =================
+    # ================= CHECK JOIN =================
     if q.data == "check_join":
         if is_member(context.bot, uid, CHANNEL_ID):
             q.edit_message_text("✅ Verified!")
@@ -148,7 +137,7 @@ def button(update: Update, context: CallbackContext):
             q.answer("❌ Not joined", show_alert=True)
         return
 
-    # ================= OPEN BOX =================
+    # ================= USER =================
     if q.data == "open":
         if user["keys"] <= 0:
             q.edit_message_text("❌ No keys")
@@ -187,7 +176,42 @@ def button(update: Update, context: CallbackContext):
         q.edit_message_text("💬 Send message to admin")
 
     elif q.data == "back":
-        q.edit_message_text("🏠 Menu", reply_markup=menu())
+        q.edit_message_text("🏠 Main Menu", reply_markup=menu())
+
+    # ================= ADMIN =================
+    if q.from_user.id == ADMIN_ID:
+
+        if q.data == "admin":
+            q.edit_message_text(
+                "🛠 ADMIN DASHBOARD",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👥 Users", callback_data="a_users")],
+                    [InlineKeyboardButton("🎁 Rewards", callback_data="a_rewards")],
+                    [InlineKeyboardButton("🎁 Send Gift", callback_data="a_gift")],
+                    [InlineKeyboardButton("🔑 Add Keys", callback_data="a_keys")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="back")]
+                ])
+            )
+            return
+
+        if q.data == "a_users":
+            q.edit_message_text(f"👥 Users: {len(data['users'])}")
+            return
+
+        if q.data == "a_rewards":
+            txt = "\n".join([r["name"] for r in data["rewards"]])
+            q.edit_message_text(txt)
+            return
+
+        if q.data == "a_keys":
+            admin_state[uid] = "keys"
+            q.edit_message_text("Send: user_id amount")
+            return
+
+        if q.data == "a_gift":
+            admin_state[uid] = "gift"
+            q.edit_message_text("Send: user_id reward")
+            return
 
 # ================= TEXT HANDLER =================
 def text(update: Update, context: CallbackContext):
@@ -201,7 +225,25 @@ def text(update: Update, context: CallbackContext):
         admin_state.pop(uid, None)
         return
 
-# ================= ADMIN =================
+    # ADMIN ACTIONS
+    if uid == str(ADMIN_ID):
+
+        if admin_state.get(uid) == "keys":
+            u, a = msg.split()
+            get_user(u)["keys"] += int(a)
+            save()
+            update.message.reply_text("🔑 Keys added")
+            admin_state.pop(uid, None)
+            return
+
+        if admin_state.get(uid) == "gift":
+            u, reward = msg.split(" ", 1)
+            context.bot.send_message(u, f"🎁 ADMIN GIFT:\n{reward}")
+            update.message.reply_text("🎁 Gift sent")
+            admin_state.pop(uid, None)
+            return
+
+# ================= ADMIN COMMAND =================
 def admin(update: Update, context: CallbackContext):
     if update.message.from_user.id != ADMIN_ID:
         return
@@ -209,7 +251,7 @@ def admin(update: Update, context: CallbackContext):
     update.message.reply_text(
         "🛠 Admin Panel",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Open Panel", callback_data="admin")]
+            [InlineKeyboardButton("Open Dashboard", callback_data="admin")]
         ])
     )
 
