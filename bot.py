@@ -28,8 +28,7 @@ else:
         ],
         "vip_queue": [],
         "config_queue": [],
-        "giveaway": {"active": False, "limit": 0, "users": []},
-        "msg_map": {}  # user ↔ admin reply tracking
+        "giveaway": {"active": False, "limit": 0, "users": []}
     }
 
 admin_state = {}
@@ -46,7 +45,7 @@ def get_user(uid):
         data["users"][uid] = {"keys": 0}
     return data["users"][uid]
 
-# ================= CHANNEL CHECK =================
+# ================= FORCE JOIN =================
 def is_member(bot, uid):
     if not CHANNEL_ID:
         return True
@@ -90,26 +89,33 @@ def start(update: Update, context: CallbackContext):
     uid = str(update.message.from_user.id)
     user = get_user(uid)
 
-    if CHANNEL_ID and not is_member(context.bot, uid):
+    # FORCE JOIN
+    if not is_member(context.bot, uid):
         update.message.reply_text(
-            "❌ Join channel first",
+            "❌ Join channel to continue",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Join Channel", url=f"https://t.me/{CHANNEL_ID.replace('@','')}")],
-                [InlineKeyboardButton("I Joined", callback_data="check_join")]
+                [InlineKeyboardButton("📢 Join", url=f"https://t.me/{CHANNEL_ID.replace('@','')}")],
+                [InlineKeyboardButton("♻️ I Joined", callback_data="check_join")]
             ])
         )
         return
 
-    # referral
+    # REFERRAL
     if context.args:
         ref = context.args[0]
+
         if ref != uid and uid not in data["referrals"]:
-            if ref in data["users"]:
-                data["users"][ref]["keys"] += 1
-                context.bot.send_message(ref, "🎉 +1 Key Referral Reward!")
+            if not is_member(context.bot, uid):
+                update.message.reply_text("❌ Join channel first")
+                return
 
             data["referrals"][uid] = ref
-            update.message.reply_text("🎉 You got +1 key!")
+
+            if ref in data["users"]:
+                data["users"][ref]["keys"] += 1
+                context.bot.send_message(ref, "🎉 +1 Key (Referral)")
+
+            update.message.reply_text("🎉 Referral success +1 key")
 
     save()
     update.message.reply_text("🔥 Welcome", reply_markup=menu())
@@ -122,33 +128,87 @@ def button(update: Update, context: CallbackContext):
     uid = str(q.from_user.id)
     user = get_user(uid)
 
-    # JOIN CHECK
-    if q.data == "check_join":
-        if is_member(context.bot, uid):
-            q.edit_message_text("✅ Verified!")
-            context.bot.send_message(uid, "🏠 Main Menu", reply_markup=menu())
-        else:
-            q.answer("❌ Not joined", show_alert=True)
+    # FORCE JOIN CHECK ALWAYS
+    if not is_member(context.bot, uid):
+        q.answer("❌ Join channel first", show_alert=True)
         return
 
-    # SPAM BLOCK
+    # SPAM CHECK (only users)
     if q.from_user.id != ADMIN_ID and is_spam(uid):
-        q.answer("⚠️ Slow down", show_alert=True)
+        q.answer("⚠️ Slow down bro", show_alert=True)
         return
 
-    # ================= OPEN BOX =================
+    # ================= ADMIN PANEL OPEN =================
+    if q.data == "admin":
+        if q.from_user.id != ADMIN_ID:
+            return
+
+        q.edit_message_text(
+            "🛠 ADMIN PANEL",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👥 Users", callback_data="a_users")],
+                [InlineKeyboardButton("🔑 Add Keys", callback_data="a_keys")],
+                [InlineKeyboardButton("🎁 Add Reward", callback_data="a_add")],
+                [InlineKeyboardButton("❌ Remove Reward", callback_data="a_remove")],
+                [InlineKeyboardButton("🎁 Giveaway", callback_data="a_give")],
+                [InlineKeyboardButton("📦 Send Gift", callback_data="a_gift")],
+                [InlineKeyboardButton("🔙 Back", callback_data="back")]
+            ])
+        )
+        return
+
+    # ================= ADMIN ACTIONS =================
+    if q.from_user.id == ADMIN_ID:
+
+        if q.data == "a_users":
+            q.edit_message_text(f"👥 Users: {len(data['users'])}")
+            return
+
+        if q.data == "a_add":
+            admin_state[uid] = "add_reward"
+            q.edit_message_text("Send: name weight")
+            return
+
+        if q.data == "a_remove":
+            admin_state[uid] = "remove_reward"
+            q.edit_message_text("Send reward name")
+            return
+
+        if q.data == "a_keys":
+            admin_state[uid] = "add_keys"
+            q.edit_message_text("Send: user_id amount")
+            return
+
+        if q.data == "a_give":
+            admin_state[uid] = "giveaway"
+            q.edit_message_text("Send giveaway limit")
+            return
+
+        if q.data == "a_gift":
+            admin_state[uid] = "gift"
+            q.edit_message_text("Send: user_id gift_text")
+            return
+
+        if q.data == "back":
+            q.edit_message_text("🏠 Menu", reply_markup=menu())
+            return
+
+    # ================= USER OPEN BOX =================
     if q.data == "open":
         if user["keys"] <= 0:
             q.edit_message_text("❌ No keys")
             return
 
         user["keys"] -= 1
-        save()
-
         reward = pick_reward()
 
         if "VIP" in reward:
             data["vip_queue"].append(uid)
+            if CHANNEL_ID:
+                context.bot.send_message(
+                    CHANNEL_ID,
+                    f"👑 NEW VIP WINNER\nUser: {uid}"
+                )
 
         if "Config" in reward:
             data["config_queue"].append(uid)
@@ -158,71 +218,28 @@ def button(update: Update, context: CallbackContext):
         context.bot.send_message(uid, f"🎁 You got: {reward}")
         context.bot.send_message(ADMIN_ID, f"🎉 WINNER: {uid} → {reward}")
 
-        if CHANNEL_ID:
-            context.bot.send_message(CHANNEL_ID, f"🏆 Winner: {uid} got {reward}")
-
     elif q.data == "keys":
         q.edit_message_text(f"🔑 Keys: {user['keys']}", reply_markup=menu())
 
     elif q.data == "refer":
-        bot = context.bot.username
-        link = f"https://t.me/{bot}?start={uid}"
-        q.edit_message_text(f"🔗 {link}", reply_markup=menu())
+        link = f"https://t.me/{context.bot.username}?start={uid}"
+        q.edit_message_text(f"🔗 Invite:\n{link}", reply_markup=menu())
 
     elif q.data == "rewards":
         q.edit_message_text("\n".join([r["name"] for r in data["rewards"]]), reply_markup=menu())
 
     elif q.data == "msg_admin":
-        admin_state[uid] = "msg"
+        admin_state[uid] = "msg_admin"
         q.edit_message_text("💬 Send message to admin")
 
-    # ================= ADMIN PANEL FIX =================
-    if q.from_user.id == ADMIN_ID:
-
-        if q.data == "admin":
-            q.edit_message_text(
-                "🛠 ADMIN PANEL",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Users", callback_data="a_users")],
-                    [InlineKeyboardButton("Rewards", callback_data="a_rewards")],
-                    [InlineKeyboardButton("Add Keys", callback_data="a_keys")],
-                    [InlineKeyboardButton("Send Gift", callback_data="a_gift")],
-                    [InlineKeyboardButton("Giveaway", callback_data="a_give")],
-                    [InlineKeyboardButton("Back", callback_data="back")]
-                ])
-            )
-            return
-
-        elif q.data == "a_users":
-            q.edit_message_text(f"👥 Users: {len(data['users'])}")
-
-        elif q.data == "a_rewards":
-            q.edit_message_text("\n".join([r["name"] for r in data["rewards"]]))
-
-        elif q.data == "a_keys":
-            admin_state[uid] = "keys"
-            q.edit_message_text("Send: user_id amount")
-
-        elif q.data == "a_gift":
-            admin_state[uid] = "gift"
-            q.edit_message_text("Send: user_id message/file")
-
-        elif q.data == "a_give":
-            admin_state[uid] = "give"
-            q.edit_message_text("Send giveaway limit")
-
-        elif q.data == "back":
-            q.edit_message_text("🏠 Menu", reply_markup=menu())
-
-# ================= TEXT =================
+# ================= TEXT HANDLER =================
 def text(update: Update, context: CallbackContext):
     uid = str(update.message.from_user.id)
     msg = update.message.text
 
-    # USER → ADMIN MESSAGE
-    if admin_state.get(uid) == "msg":
-        data["msg_map"][uid] = True
-        context.bot.send_message(ADMIN_ID, f"💬 MSG FROM {uid}:\n{msg}")
+    # USER MESSAGE TO ADMIN
+    if admin_state.get(uid) == "msg_admin":
+        context.bot.send_message(ADMIN_ID, f"💬 USER {uid}:\n{msg}")
         update.message.reply_text("✅ Sent")
         admin_state.pop(uid, None)
         return
@@ -232,22 +249,32 @@ def text(update: Update, context: CallbackContext):
 
     state = admin_state.get(uid)
 
-    if state == "keys":
+    # ADD REWARD
+    if state == "add_reward":
+        name, weight = msg.split()
+        data["rewards"].append({"name": name, "weight": int(weight)})
+        save()
+
+    # REMOVE REWARD
+    elif state == "remove_reward":
+        data["rewards"] = [r for r in data["rewards"] if r["name"] != msg]
+        save()
+
+    # ADD KEYS
+    elif state == "add_keys":
         u, a = msg.split()
         get_user(u)["keys"] += int(a)
-        update.message.reply_text("✅ Keys added")
+        save()
 
+    # GIVEAWAY
+    elif state == "giveaway":
+        data["giveaway"] = {"active": True, "limit": int(msg), "users": []}
+        save()
+
+    # GIFT SEND
     elif state == "gift":
-        u, *gift = msg.split()
-        gift_text = " ".join(gift)
-        context.bot.send_message(u, f"🎁 Gift from Admin:\n{gift_text}")
-        update.message.reply_text("🎁 Gift sent")
-
-    elif state == "give":
-        data["giveaway"]["active"] = True
-        data["giveaway"]["limit"] = int(msg)
-        data["giveaway"]["users"] = []
-        update.message.reply_text("🎉 Giveaway started")
+        u, gift = msg.split(maxsplit=1)
+        context.bot.send_message(u, f"🎁 Gift from Admin:\n{gift}")
 
     admin_state.pop(uid, None)
 
