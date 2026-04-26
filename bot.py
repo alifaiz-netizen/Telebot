@@ -74,6 +74,19 @@ def loading_bar(percent):
     bar = "▓" * filled + "░" * empty
     return f"[{bar}] {percent}%"
 
+# ================= ALL REWARDS CLAIMED CHECK =================
+# Returns True if every reward with a limit is fully claimed
+def all_rewards_claimed():
+    for r in data["rewards"]:
+        name = r["name"]
+        limit = data["limits"].get(name)
+        if limit is None:
+            return False  # unlimited reward exists, not done
+        claimed = len(data["winners"].get(name, []))
+        if claimed < limit:
+            return False  # this reward still has slots
+    return True  # every reward is fully claimed
+
 # ================= MENU =================
 def menu():
     return InlineKeyboardMarkup([
@@ -85,9 +98,8 @@ def menu():
     ])
 
 # ================= PICK REWARD =================
-# Always picks from ALL rewards using weights (including limited ones).
-# If the picked reward is fully claimed → show "Better luck next time"
-# This way limited rewards feel rare and fair
+# Picks from ALL rewards using weights.
+# If picked reward is fully claimed → "Better luck next time"
 def pick_reward():
     rewards = data["rewards"]
     if not rewards:
@@ -106,15 +118,13 @@ def pick_reward():
     if picked is None:
         return None, False
 
-    # Check if this reward has a limit and is fully claimed
+    # Check if limit is hit for this reward
     limit = data["limits"].get(picked)
     if limit is not None:
         claimed = len(data["winners"].get(picked, []))
         if claimed >= limit:
-            # Reward is sold out → better luck next time
             return "😢 Better luck next time!", False
 
-    # Valid win
     return picked, True
 
 # ================= START =================
@@ -148,10 +158,13 @@ def start(update: Update, context: CallbackContext):
                 f"📊 Giveaway Progress:\n{bar}\n"
                 f"👥 {joined}/{limit} users claimed"
             )
-            # Auto-stop giveaway when limit is reached
+            # Auto stop giveaway when all slots claimed
             if joined >= limit:
                 data["giveaway"]["active"] = False
-                update.message.reply_text("🏁 Giveaway is now over! All slots have been claimed.")
+                update.message.reply_text(
+                    "🏁 Giveaway slots are all claimed!\n"
+                    "Stay tuned for the next one!"
+                )
             save()
 
     # REFERRAL CHECK
@@ -162,14 +175,13 @@ def start(update: Update, context: CallbackContext):
                 data["referrals"][uid] = ref
                 if ref in data["users"]:
                     data["users"][ref]["keys"] += 1
-                    # Notify referrer
                     context.bot.send_message(
                         ref,
                         f"🎉 You got +1 Key from a Referral!\n"
                         f"🔑 Your total keys: {data['users'][ref]['keys']}"
                     )
                 update.message.reply_text(
-                    f"🎉 Referral success!\n"
+                    f"🎉 Referral bonus applied!\n"
                     f"🔑 Your friend got +1 Key!"
                 )
 
@@ -239,42 +251,56 @@ def button(update: Update, context: CallbackContext):
 
         if q.data == "a_add":
             admin_state[uid] = "add"
-            q.edit_message_text("➕ Send reward details:\nFormat: name weight\nExample: 🎁 New Reward 20")
+            q.edit_message_text(
+                "➕ Send reward details:\n"
+                "Format: name weight\n"
+                "Example: 🎁 New Reward 20"
+            )
             return
 
         if q.data == "a_remove":
             admin_state[uid] = "remove"
-            q.edit_message_text("🗑 Send the reward name to remove:")
+            q.edit_message_text("🗑 Send the exact reward name to remove:")
             return
 
         if q.data == "a_limit":
             admin_state[uid] = "limit"
             q.edit_message_text(
-                "📊 Send: reward_name limit\n"
+                "📊 Set how many users can win a reward.\n\n"
+                "Format: reward_name limit\n"
                 "Example: 👑 VIP Access 1\n\n"
-                "This means only 1 user can ever win that reward."
+                "⚠️ NOTE: Whatever number you send, that becomes\n"
+                "the new total limit. It REPLACES the old one.\n"
+                "It does NOT add on top of the old limit.\n\n"
+                "So if limit was 2 and you want 4 total,\n"
+                "you must send 4, not 2."
             )
             return
 
         if q.data == "a_keys":
             admin_state[uid] = "addkeys"
-            q.edit_message_text("🔑 Send: user_id amount\nExample: 123456789 5")
+            q.edit_message_text(
+                "🔑 Add keys to a user.\n"
+                "Format: user_id amount\n"
+                "Example: 123456789 5"
+            )
             return
 
         if q.data == "a_give":
             admin_state[uid] = "giveaway"
             q.edit_message_text(
                 "🎯 Start a Giveaway!\n\n"
-                "Send: limit keys\n"
+                "Format: limit keys\n"
                 "Example: 10 3\n\n"
-                "First 10 users who start the bot will get 3 free keys each."
+                "This means the first 10 users who\n"
+                "start the bot will each get 3 free keys."
             )
             return
 
         if q.data == "a_give_stop":
             data["giveaway"]["active"] = False
             save()
-            q.edit_message_text("🛑 Giveaway stopped!")
+            q.edit_message_text("🛑 Giveaway has been stopped!")
             return
 
         if q.data == "a_give_status":
@@ -300,11 +326,24 @@ def button(update: Update, context: CallbackContext):
 
     # ================= OPEN BOX =================
     if q.data == "open":
+
+        # FIX 1: If giveaway is stopped and all rewards claimed → block opening
+        if not data["giveaway"]["active"] and all_rewards_claimed():
+            q.edit_message_text(
+                "🏁 This giveaway has ended!\n\n"
+                "All prizes have been claimed.\n"
+                "⏳ Wait for the next giveaway!\n"
+                "🔑 Keep collecting keys in the meantime!\n\n"
+                "Your keys are safe and will carry over.",
+                reply_markup=menu()
+            )
+            return
+
         if user["keys"] <= 0:
             q.edit_message_text("❌ You have no keys left!", reply_markup=menu())
             return
 
-        # Animated loading bar
+        # Animated loading bar — key deducted AFTER animation
         msg = context.bot.send_message(uid, f"🎰 Opening your box...\n{loading_bar(0)}")
         for pct in [20, 40, 60, 80, 100]:
             time.sleep(0.4)
@@ -314,6 +353,7 @@ def button(update: Update, context: CallbackContext):
                 message_id=msg.message_id
             )
 
+        # Deduct key AFTER animation
         user["keys"] -= 1
         reward, is_real_win = pick_reward()
 
@@ -330,30 +370,52 @@ def button(update: Update, context: CallbackContext):
             data["winners"].setdefault(reward, [])
             data["winners"][reward].append(uid)
 
+            # Check if all rewards are now fully claimed → auto stop giveaway
+            if all_rewards_claimed():
+                data["giveaway"]["active"] = False
+                context.bot.send_message(
+                    ADMIN_ID,
+                    "🏁 All rewards have been fully claimed!\n"
+                    "Giveaway has been automatically stopped."
+                )
+
         save()
 
-        # Show result
-        context.bot.edit_message_text(
-            f"🎁 Result: {reward}\n\n🔑 Remaining Keys: {user['keys']}",
-            chat_id=uid,
-            message_id=msg.message_id
-        )
-
-        # Notify admin + channel ONLY on real win
+        # Show result with Message Admin button if real win
         if is_real_win:
+            context.bot.edit_message_text(
+                f"🎁 Result: {reward}\n\n"
+                f"🔑 Remaining Keys: {user['keys']}\n\n"
+                f"🎉 Congratulations! Tap below to claim your prize!",
+                chat_id=uid,
+                message_id=msg.message_id,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📩 Claim Prize — Message Admin", callback_data="msg_admin")],
+                    [InlineKeyboardButton("🏠 Menu", callback_data="back")]
+                ])
+            )
+            # Notify admin + channel
             username = q.from_user.username
             display = f"@{username}" if username else f"User {uid}"
-
             context.bot.send_message(
                 ADMIN_ID,
                 f"🏆 NEW WINNER!\n👤 {display} (ID: {uid})\n🎁 Prize: {reward}"
             )
-
             if CHANNEL_ID:
                 context.bot.send_message(
                     CHANNEL_ID,
                     f"🏆 We have a winner!\n👤 {display}\n🎁 Prize: {reward}"
                 )
+        else:
+            # Better luck next time — show menu normally
+            context.bot.edit_message_text(
+                f"🎁 Result: {reward}\n\n"
+                f"🔑 Remaining Keys: {user['keys']}\n"
+                f"💪 Try again with another key!",
+                chat_id=uid,
+                message_id=msg.message_id,
+                reply_markup=menu()
+            )
 
     elif q.data == "keys":
         q.edit_message_text(f"🔑 Your Keys: {user['keys']}", reply_markup=menu())
@@ -362,7 +424,7 @@ def button(update: Update, context: CallbackContext):
         link = f"https://t.me/{context.bot.username}?start={uid}"
         q.edit_message_text(
             f"🔗 Your Referral Link:\n{link}\n\n"
-            f"Share this link — when someone joins via your link you get +1 Key!",
+            f"Share this — every friend who joins gives you +1 Key!",
             reply_markup=menu()
         )
 
@@ -375,11 +437,11 @@ def button(update: Update, context: CallbackContext):
             if limit is not None:
                 remaining = limit - claimed
                 if remaining > 0:
-                    lines.append(f"{name} — {remaining} left")
+                    lines.append(f"{name} — {remaining} slot(s) left")
                 else:
                     lines.append(f"{name} — 🔴 Fully Claimed")
             else:
-                lines.append(f"{name}")
+                lines.append(f"{name} — Unlimited")
         q.edit_message_text(
             "🎁 Rewards:\n\n" + "\n".join(lines),
             reply_markup=menu()
@@ -387,7 +449,13 @@ def button(update: Update, context: CallbackContext):
 
     elif q.data == "msg_admin":
         admin_state[uid] = "msg_admin"
-        q.edit_message_text("💬 Type your message to the admin below:")
+        q.edit_message_text(
+            "💬 Type your message to the admin below:\n\n"
+            "If you won a prize, mention:\n"
+            "✅ Your prize name\n"
+            "✅ Your Telegram username\n"
+            "✅ Any details admin may need"
+        )
 
 # ================= TEXT =================
 def text(update: Update, context: CallbackContext):
@@ -430,29 +498,45 @@ def text(update: Update, context: CallbackContext):
                 save()
                 update.message.reply_text(f"✅ Reward added: {name} (weight {weight})")
             except Exception:
-                update.message.reply_text("❌ Wrong format! Use: name weight\nExample: 🎁 New Reward 20")
+                update.message.reply_text(
+                    "❌ Wrong format!\n"
+                    "Use: name weight\n"
+                    "Example: 🎁 New Reward 20"
+                )
 
         elif state == "remove":
             before = len(data["rewards"])
             data["rewards"] = [r for r in data["rewards"] if r["name"] != msg]
+            # Also clean up limits and winners for removed reward
+            data["limits"].pop(msg, None)
+            data["winners"].pop(msg, None)
             save()
             if len(data["rewards"]) < before:
                 update.message.reply_text(f"✅ Removed: {msg}")
             else:
-                update.message.reply_text("❌ Reward not found!")
+                update.message.reply_text("❌ Reward not found! Send the exact name.")
 
         elif state == "limit":
             try:
                 parts = msg.rsplit(" ", 1)
                 name, limit = parts[0], int(parts[1])
+                # FIX 2: Always REPLACE the limit, never add to it
+                old_limit = data["limits"].get(name, "not set")
                 data["limits"][name] = limit
                 save()
                 update.message.reply_text(
-                    f"✅ Limit set!\n"
-                    f"🎁 {name} → max {limit} winner(s)"
+                    f"✅ Limit updated!\n"
+                    f"🎁 {name}\n"
+                    f"📊 Old limit: {old_limit}\n"
+                    f"📊 New limit: {limit}\n\n"
+                    f"This means a total of {limit} user(s) can win this reward."
                 )
             except Exception:
-                update.message.reply_text("❌ Wrong format! Use: reward_name limit\nExample: 👑 VIP Access 1")
+                update.message.reply_text(
+                    "❌ Wrong format!\n"
+                    "Use: reward_name limit\n"
+                    "Example: 👑 VIP Access 1"
+                )
 
         elif state == "addkeys":
             try:
@@ -471,7 +555,11 @@ def text(update: Update, context: CallbackContext):
                     f"🔑 You now have {target_user['keys']} key(s)"
                 )
             except Exception:
-                update.message.reply_text("❌ Wrong format! Use: user_id amount\nExample: 123456789 5")
+                update.message.reply_text(
+                    "❌ Wrong format!\n"
+                    "Use: user_id amount\n"
+                    "Example: 123456789 5"
+                )
 
         elif state == "giveaway":
             try:
@@ -486,12 +574,17 @@ def text(update: Update, context: CallbackContext):
                 save()
                 update.message.reply_text(
                     f"✅ Giveaway started!\n"
-                    f"🎯 First {limit} users who start the bot get {keys} free key(s) each!\n\n"
+                    f"🎯 First {limit} users who start the bot\n"
+                    f"   will each get {keys} free key(s)!\n\n"
                     f"📊 Progress:\n{loading_bar(0)}\n"
                     f"👥 0/{limit} claimed"
                 )
             except Exception:
-                update.message.reply_text("❌ Wrong format! Use: limit keys\nExample: 10 3")
+                update.message.reply_text(
+                    "❌ Wrong format!\n"
+                    "Use: limit keys\n"
+                    "Example: 10 3"
+                )
 
         admin_state.pop(admin_uid, None)
         return
